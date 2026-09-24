@@ -1,0 +1,39 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Set version and repository
+        shell: pwsh
+        run: |
+          $info = @{version="${{ github.ref_name }}"; repository="${{ github.repository }}"} | ConvertTo-Json -Compress
+          [System.IO.File]::WriteAllText("$PWD\build_info.json", $info)
+      - name: Install dependencies
+        run: python -m pip install pillow pyinstaller
+      - name: Build application
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Watermark Studio" --icon WatermarkStudio.ico --add-data "bigtitslover963.png:." --add-data "WatermarkStudio.ico:." --add-data "build_info.json:." --hidden-import updater watermark_tool.py
+      - name: Create SHA256 file
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 "dist\Watermark Studio.exe").Hash.ToLower()
+          [System.IO.File]::WriteAllText("dist\Watermark Studio.exe.sha256", "$hash  Watermark Studio.exe`n")
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Watermark Studio.exe
+            dist/Watermark Studio.exe.sha256
