@@ -2,11 +2,11 @@
 
 A Windows batch image watermark app with a purple interface, live preview, and numbered clean/watermarked pairs. Originals in the selected folder are left untouched.
 
-Enter text in **Watermark text** to make your own lettering and choose a font installed on your PC. New sessions start with no watermark name selected. To use the original BIGTITSLOVER963 graphic, select **Use original logo instead of text**. The live preview shows your chosen watermark and color. The watermark width defaults to 25% of each image.
+Enter text in **Watermark text** to make your own lettering and choose a font installed on your PC. New sessions start with no watermark name selected. Enter text before creating watermarked copies. The live preview shows your chosen watermark and color. The watermark width defaults to 25% of each image.
 
 Use **Import font** to choose a `.ttf`, `.otf`, or `.ttc` file without installing it in Windows. The app saves a copy in `%LOCALAPPDATA%\WatermarkStudio\fonts` so it stays in the picker after you reopen it. Only import fonts you have permission to use.
 
-Choose one of nine watermark positions, set opacity from 0 to 100%, and save your watermark text or original logo choice, font, color, width, position, and opacity as a named preset. Use **Load** to restore it later or **Delete** to remove it. Presets are stored in `%LOCALAPPDATA%\WatermarkStudio\presets.json`. The image folder and character filename are selected separately for each batch.
+Choose one of nine watermark positions, set opacity from 0 to 100%, and save your watermark text, font, color, width, position, and opacity as a named preset. Use **Load** to restore it later or **Delete** to remove it. Presets are stored in `%LOCALAPPDATA%\WatermarkStudio\presets.json`. The image folder and character filename are selected separately for each batch.
 
 ## Build on Windows
 
