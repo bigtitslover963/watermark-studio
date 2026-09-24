@@ -1,6 +1,7 @@
 from pathlib import Path
 import colorsys
 import faulthandler
+import filecmp
 import gc
 import os
 import queue
@@ -21,23 +22,56 @@ MARK = ROOT / "bigtitslover963.png"
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_PIXELS = 40_000_000
 ORIGINAL_PURPLE = "#7920ad"
+FONT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
+
+
+def imported_font_dir():
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WatermarkStudio" / "fonts"
+
+
+def font_label(path, imported=False):
+    family, style = ImageFont.truetype(str(path), 24).getname()
+    name = f"{family} ({style})" if style.lower() != "regular" else family
+    return f"{name} [Imported: {path.name}]" if imported else name
+
+
+def import_font(source, destination_dir=None):
+    source = Path(source)
+    if source.suffix.lower() not in FONT_EXTENSIONS or source.stat().st_size > 20 * 1024 * 1024:
+        raise ValueError("Choose a TTF, OTF, or TTC font under 20 MB.")
+    font_label(source)  # Validate the font before saving a copy.
+    destination_dir = Path(destination_dir) if destination_dir else imported_font_dir()
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / source.name
+    number = 2
+    while destination.exists() and not filecmp.cmp(source, destination, shallow=False):
+        destination = destination_dir / f"{source.stem} ({number}){source.suffix}"
+        number += 1
+    if not destination.exists():
+        temporary = destination.with_name(destination.name + ".tmp")
+        try:
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return font_label(destination, imported=True), str(destination)
 
 
 def available_fonts():
     """Map readable font names to files Pillow can load on this computer."""
     roots = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"] if os.name == "nt" else [Path("/usr/share/fonts/truetype")]
+    roots.append(imported_font_dir())
     found = {}
     for root in roots:
         if not root.exists():
             continue
         for path in sorted(root.rglob("*")):
-            if path.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
+            if path.suffix.lower() not in FONT_EXTENSIONS:
                 continue
             try:
-                family, style = ImageFont.truetype(str(path), 24).getname()
+                label = font_label(path, imported=root == roots[-1])
             except (OSError, ValueError):
                 continue
-            label = f"{family} ({style})" if style.lower() != "regular" else family
             found.setdefault(label, str(path))
     if not found:
         found["Default"] = "DejaVuSans.ttf"
@@ -263,8 +297,7 @@ def main():
 
     header = tk.Frame(content, bg=BG, padx=30, pady=18)
     header.pack(fill="x")
-    label(header, "◇  BIGTITSLOVER963", 11, ACCENT, True).pack(anchor="w")
-    label(header, "Watermark Studio", 25, FG, True).pack(anchor="w", pady=(3, 0))
+    label(header, "Watermark Studio", 25, FG, True).pack(anchor="w")
     label(header, "BATCH PROCESSING  /  CUSTOM COLOR  /  NUMBERED PAIRS", 9, MUTED).pack(anchor="w")
     rail = tk.Canvas(content, width=760, height=9, bg=BG, bd=0, highlightthickness=0)
     rail.pack(pady=(0, 15))
@@ -299,8 +332,27 @@ def main():
     default_font = next((name for name in fonts if name.casefold() == "segoe ui"), next(iter(fonts)))
     font_var = tk.StringVar(value=default_font)
     label(controls, "FONT FOR CUSTOM TEXT", 9, MUTED, True).pack(anchor="w", pady=(12, 5))
-    ttk.Combobox(controls, textvariable=font_var, values=list(fonts), state="readonly",
-                 style="Dark.TCombobox").pack(fill="x")
+    font_row = tk.Frame(controls, bg=CARD)
+    font_row.pack(fill="x")
+    font_picker = ttk.Combobox(font_row, textvariable=font_var, values=list(fonts), state="readonly",
+                               style="Dark.TCombobox")
+    font_picker.pack(side="left", fill="x", expand=True)
+
+    def choose_font():
+        source = filedialog.askopenfilename(title="Import a font", parent=window,
+                                            filetypes=[("Font files", "*.ttf *.otf *.ttc")])
+        if not source:
+            return
+        try:
+            name, path = import_font(source)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Could not import font", str(exc), parent=window)
+            return
+        fonts[name] = path
+        font_picker.configure(values=sorted(fonts, key=str.casefold))
+        font_var.set(name)
+
+    button(font_row, "Import font", choose_font).pack(side="left", padx=(10, 0))
 
     settings = tk.Frame(controls, bg=CARD)
     settings.pack(fill="x", pady=(18, 0))
@@ -530,6 +582,14 @@ if __name__ == "__main__":
             if created != 2 or errors:
                 raise RuntimeError(f"Watermark processing self-test failed: {errors}")
             font_path = next(iter(available_fonts().values()))
+            if Path(font_path).is_file():
+                with tempfile.TemporaryDirectory() as font_directory:
+                    imported_name, imported_path = import_font(font_path, font_directory)
+                    if "[Imported:" not in imported_name or not Path(imported_path).is_file():
+                        raise RuntimeError("Import font self-test failed")
+                    with make_watermark("Imported font", imported_path) as imported_mark:
+                        if imported_mark.getbbox() is None:
+                            raise RuntimeError("Imported font rendering failed")
             _, created, _, errors = process_folder(sample, 25, color="#aa55ff",
                                                    character_name="Custom", watermark_text="My Studio",
                                                    font_path=font_path)
