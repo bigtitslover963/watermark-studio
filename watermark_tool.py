@@ -12,7 +12,7 @@ import traceback
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageTk
 import updater
 
 
@@ -20,6 +20,48 @@ ROOT = Path(__file__).resolve().parent
 MARK = ROOT / "bigtitslover963.png"
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_PIXELS = 40_000_000
+ORIGINAL_PURPLE = "#7920ad"
+
+
+def available_fonts():
+    """Map readable font names to files Pillow can load on this computer."""
+    roots = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"] if os.name == "nt" else [Path("/usr/share/fonts/truetype")]
+    found = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
+                continue
+            try:
+                family, style = ImageFont.truetype(str(path), 24).getname()
+            except (OSError, ValueError):
+                continue
+            label = f"{family} ({style})" if style.lower() != "regular" else family
+            found.setdefault(label, str(path))
+    if not found:
+        found["Default"] = "DejaVuSans.ttf"
+    return dict(sorted(found.items(), key=lambda item: item[0].casefold()))
+
+
+def make_watermark(text="", font_path=None, color=None):
+    text = text.strip()
+    if not text:
+        with Image.open(MARK) as graphic:
+            watermark = graphic.convert("RGBA")
+            bounds = watermark.getbbox()
+            if bounds is None:
+                raise ValueError("The watermark graphic is empty.")
+            return colored_watermark(watermark.crop(bounds), color)
+    if len(text) > 120 or any(ord(ch) < 32 for ch in text):
+        raise ValueError("Use one line of watermark text, up to 120 characters.")
+    font = ImageFont.truetype(font_path or "DejaVuSans.ttf", 128)
+    bounds = font.getbbox(text)
+    mark = Image.new("RGBA", (max(1, bounds[2] - bounds[0]) + 8,
+                              max(1, bounds[3] - bounds[1]) + 8), (0, 0, 0, 0))
+    ImageDraw.Draw(mark).text((4 - bounds[0], 4 - bounds[1]), text, font=font,
+                              fill=color or ORIGINAL_PURPLE)
+    return mark
 
 
 def crash_log_path():
@@ -85,7 +127,8 @@ def colored_watermark(watermark: Image.Image, color: str | None) -> Image.Image:
 
 
 def process_folder(folder: Path, width_percent: int = 25, color: str | None = None,
-                   replace_existing: bool = False, character_name: str = ""):
+                   replace_existing: bool = False, character_name: str = "",
+                   watermark_text: str = "", font_path: str | None = None):
     if not folder.is_dir():
         raise ValueError("Choose a folder containing images.")
     if not MARK.is_file():
@@ -110,12 +153,7 @@ def process_folder(folder: Path, width_percent: int = 25, color: str | None = No
     if clean_destination:
         clean_destination.mkdir(exist_ok=True)
     created, skipped, errors = 0, 0, []
-    with Image.open(MARK) as graphic:
-        watermark = graphic.convert("RGBA")
-        bounds = watermark.getbbox()
-        if bounds is None:
-            raise ValueError("The watermark graphic is empty.")
-        watermark = colored_watermark(watermark.crop(bounds), color)
+    with make_watermark(watermark_text, font_path, color) as watermark:
         for index, source in enumerate(files, start=1):
             clean = clean_destination / f"{character_name} {index}{source.suffix}" if clean_destination else None
             output = destination / (f"{character_name} {index}b{source.suffix}" if character_name
@@ -172,6 +210,8 @@ def main():
     style.theme_use("clam")
     style.configure("Dark.TEntry", fieldbackground=FIELD, foreground=FG, bordercolor="#513778", padding=8)
     style.configure("Dark.TSpinbox", fieldbackground=FIELD, foreground=FG, arrowsize=13, padding=5)
+    style.configure("Dark.TCombobox", fieldbackground=FIELD, background=FIELD, foreground=FG,
+                    arrowcolor=ACCENT, bordercolor="#513778", padding=6)
     style.configure("Dark.TCheckbutton", background=CARD, foreground=FG, font=("Segoe UI", 10))
     style.map("Dark.TCheckbutton", background=[("active", CARD)], foreground=[("active", FG)])
 
@@ -251,18 +291,29 @@ def main():
     ttk.Entry(controls, textvariable=character_var, style="Dark.TEntry").pack(fill="x")
     label(controls, "Example: Rias Gremory 1.png  +  Rias Gremory 1b.png", 9, MUTED).pack(anchor="w", pady=(5, 0))
 
+    label(controls, "03  /  WATERMARK TEXT (OPTIONAL)", 10, ACCENT, True).pack(anchor="w", pady=(16, 6))
+    watermark_text_var = tk.StringVar()
+    ttk.Entry(controls, textvariable=watermark_text_var, style="Dark.TEntry").pack(fill="x")
+    label(controls, "Leave blank to use your original BIGTITSLOVER963 logo.", 9, MUTED).pack(anchor="w", pady=(5, 0))
+    fonts = available_fonts()
+    default_font = next((name for name in fonts if name.casefold() == "segoe ui"), next(iter(fonts)))
+    font_var = tk.StringVar(value=default_font)
+    label(controls, "FONT FOR CUSTOM TEXT", 9, MUTED, True).pack(anchor="w", pady=(12, 5))
+    ttk.Combobox(controls, textvariable=font_var, values=list(fonts), state="readonly",
+                 style="Dark.TCombobox").pack(fill="x")
+
     settings = tk.Frame(controls, bg=CARD)
     settings.pack(fill="x", pady=(18, 0))
     left = tk.Frame(settings, bg=CARD)
     left.pack(side="left", anchor="n", fill="x", expand=True, padx=(0, 24))
     right = tk.Frame(settings, bg=CARD)
     right.pack(side="left", anchor="n", fill="x", expand=True)
-    label(left, "03  /  WATERMARK SIZE", 10, ACCENT, True).pack(anchor="w")
+    label(left, "04  /  WATERMARK SIZE", 10, ACCENT, True).pack(anchor="w")
     label(left, "Width as a percent of the image", 9, MUTED).pack(anchor="w", pady=(1, 5))
     width_var = tk.IntVar(value=25)
     ttk.Spinbox(left, from_=5, to=60, textvariable=width_var, width=7,
                 style="Dark.TSpinbox").pack(anchor="w")
-    label(right, "04  /  LETTERING COLOR", 10, ACCENT, True).pack(anchor="w")
+    label(right, "05  /  LETTERING COLOR", 10, ACCENT, True).pack(anchor="w")
     color_var = tk.StringVar(value="Original purple")
     selected_color = [None]
     color_row = tk.Frame(right, bg=CARD)
@@ -270,10 +321,6 @@ def main():
     hue_var = tk.IntVar(value=278)
     swatch = tk.Label(color_row, width=3, bg="#7920ad", relief="solid", bd=1,
                       highlightbackground=ACCENT, highlightthickness=2)
-
-    with Image.open(MARK) as graphic:
-        base_mark = graphic.convert("RGBA")
-        base_mark = base_mark.crop(base_mark.getbbox())
 
     def update_preview(*_):
         backdrop = Image.new("RGBA", (700, 150), "#0d1529")
@@ -287,13 +334,18 @@ def main():
         for y in range(0, 150, 25):
             brush.line((0, y, 700, y), fill=(112, 72, 170, 22))
         brush.rectangle((0, 0, 699, 149), outline=(149, 75, 237, 180), width=1)
-        mark = colored_watermark(base_mark, selected_color[0])
+        try:
+            mark = make_watermark(watermark_text_var.get(), fonts[font_var.get()], selected_color[0])
+        except (OSError, ValueError):
+            return
         try:
             width = min(60, max(5, width_var.get()))
         except tk.TclError:
             width = 25
         size = (max(1, round(700 * width / 100)), 0)
         size = (size[0], max(1, round(size[0] * mark.height / mark.width)))
+        if size[1] > 120:
+            size = (max(1, round(size[0] * 120 / size[1])), 120)
         overlay = mark.resize(size, Image.Resampling.LANCZOS)
         backdrop.alpha_composite(overlay, (14, 150 - 14 - size[1]))
         photo = ImageTk.PhotoImage(backdrop)
@@ -399,7 +451,8 @@ def main():
             if not 5 <= width <= 60:
                 raise ValueError("Choose a watermark width between 5% and 60%.")
             destination, created, skipped, errors = process_folder(
-                Path(folder_var.get()), width, selected_color[0], replace_var.get(), character_var.get())
+                Path(folder_var.get()), width, selected_color[0], replace_var.get(), character_var.get(),
+                watermark_text_var.get(), fonts[font_var.get()])
         except Exception as exc:
             record_error("Creating watermarked copies", exc)
             messagebox.showerror("Watermark Tool", str(exc))
@@ -458,6 +511,8 @@ def main():
     button(footer, "CHECK FOR UPDATES", lambda: check_updates(True)).pack(anchor="w", pady=(7, 0))
     label(footer, "Bottom-left  ·  100% opacity  ·  Originals kept safe", 9, MUTED).pack(anchor="w", pady=(9, 0))
     width_var.trace_add("write", update_preview)
+    watermark_text_var.trace_add("write", update_preview)
+    font_var.trace_add("write", update_preview)
     window.after(0, update_preview)
     window.after(250, poll_updates)
     window.after(4000, check_updates)
@@ -474,6 +529,12 @@ if __name__ == "__main__":
             _, created, _, errors = process_folder(sample, 25, character_name="Example")
             if created != 2 or errors:
                 raise RuntimeError(f"Watermark processing self-test failed: {errors}")
+            font_path = next(iter(available_fonts().values()))
+            _, created, _, errors = process_folder(sample, 25, color="#aa55ff",
+                                                   character_name="Custom", watermark_text="My Studio",
+                                                   font_path=font_path)
+            if created != 2 or errors:
+                raise RuntimeError(f"Custom text self-test failed: {errors}")
     else:
         try:
             diagnostic = crash_log_path()
