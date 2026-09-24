@@ -42,6 +42,8 @@ def latest_release():
     if version_tuple(release["tag_name"]) <= version_tuple(info["version"]):
         return None
     assets = {item["name"]: item["browser_download_url"] for item in release["assets"]}
+    if APP_NAME not in assets or APP_NAME + ".sha256" not in assets:
+        raise RuntimeError("The new release is still being built. Please check again in a minute.")
     exe_url = assets[APP_NAME]
     digest_url = assets[APP_NAME + ".sha256"]
     prefix = f"https://github.com/{repo}/releases/download/"
