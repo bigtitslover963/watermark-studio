@@ -19,7 +19,6 @@ import updater
 
 
 ROOT = Path(__file__).resolve().parent
-MARK = ROOT / "bigtitslover963.png"
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_PIXELS = 40_000_000
 ORIGINAL_PURPLE = "#7920ad"
@@ -130,17 +129,10 @@ def available_fonts():
     return dict(sorted(found.items(), key=lambda item: item[0].casefold()))
 
 
-def make_watermark(text="", font_path=None, color=None, use_original_logo=False):
+def make_watermark(text="", font_path=None, color=None):
     text = text.strip()
-    if use_original_logo:
-        with Image.open(MARK) as graphic:
-            watermark = graphic.convert("RGBA")
-            bounds = watermark.getbbox()
-            if bounds is None:
-                raise ValueError("The watermark graphic is empty.")
-            return colored_watermark(watermark.crop(bounds), color)
     if not text:
-        raise ValueError("Enter watermark text or select Use original logo.")
+        raise ValueError("Enter the text you want on your watermark.")
     if len(text) > 120 or any(ord(ch) < 32 for ch in text):
         raise ValueError("Use one line of watermark text, up to 120 characters.")
     font = ImageFont.truetype(font_path or "DejaVuSans.ttf", 128)
@@ -220,12 +212,9 @@ def colored_watermark(watermark: Image.Image, color: str | None) -> Image.Image:
 def process_folder(folder: Path, width_percent: int = 25, color: str | None = None,
                    replace_existing: bool = False, character_name: str = "",
                    watermark_text: str = "", font_path: str | None = None,
-                   position: str = "Bottom left", opacity: int = 100,
-                   use_original_logo: bool = False):
+                   position: str = "Bottom left", opacity: int = 100):
     if not folder.is_dir():
         raise ValueError("Choose a folder containing images.")
-    if use_original_logo and not MARK.is_file():
-        raise FileNotFoundError(f"Watermark graphic is missing: {MARK}")
     if position not in POSITIONS or not 0 <= opacity <= 100:
         raise ValueError("Choose a valid watermark position and opacity.")
     character_name = character_name.strip()
@@ -248,7 +237,7 @@ def process_folder(folder: Path, width_percent: int = 25, color: str | None = No
     if clean_destination:
         clean_destination.mkdir(exist_ok=True)
     created, skipped, errors = 0, 0, []
-    with make_watermark(watermark_text, font_path, color, use_original_logo) as watermark:
+    with make_watermark(watermark_text, font_path, color) as watermark:
         for index, source in enumerate(files, start=1):
             clean = clean_destination / f"{character_name} {index}{source.suffix}" if clean_destination else None
             output = destination / (f"{character_name} {index}b{source.suffix}" if character_name
@@ -388,9 +377,6 @@ def main():
     label(controls, "03  /  WATERMARK TEXT", 10, ACCENT, True).pack(anchor="w", pady=(16, 6))
     watermark_text_var = tk.StringVar()
     ttk.Entry(controls, textvariable=watermark_text_var, style="Dark.TEntry").pack(fill="x")
-    use_original_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(controls, text="Use original BIGTITSLOVER963 logo instead of text",
-                    variable=use_original_var).pack(anchor="w", pady=(7, 0))
     fonts = available_fonts()
     default_font = next((name for name in fonts if name.casefold() == "segoe ui"), next(iter(fonts)))
     font_var = tk.StringVar(value=default_font)
@@ -451,7 +437,7 @@ def main():
         for y in range(0, 150, 25):
             brush.line((0, y, 700, y), fill=(112, 72, 170, 22))
         brush.rectangle((0, 0, 699, 149), outline=(149, 75, 237, 180), width=1)
-        if not use_original_var.get() and not watermark_text_var.get().strip():
+        if not watermark_text_var.get().strip():
             brush.text((16, 123), "Enter watermark text to preview", fill="#aa9bbd")
             photo = ImageTk.PhotoImage(backdrop)
             preview_label.configure(image=photo)
@@ -459,7 +445,7 @@ def main():
             return
         try:
             mark = make_watermark(watermark_text_var.get(), fonts[font_var.get()],
-                                  selected_color[0], use_original_var.get())
+                                  selected_color[0])
         except (OSError, ValueError):
             return
         try:
@@ -541,12 +527,14 @@ def main():
         if not name or len(name) > 50:
             messagebox.showerror("Preset name", "Enter a preset name of up to 50 characters.", parent=window)
             return
+        if not watermark_text_var.get().strip():
+            messagebox.showerror("Watermark text", "Enter watermark text before saving a preset.", parent=window)
+            return
         try:
             presets = read_presets()
             if name in presets and not messagebox.askyesno("Replace preset", f"Replace '{name}'?", parent=window):
                 return
             presets[name] = {"text": watermark_text_var.get(), "font": font_var.get(),
-                             "use_original_logo": use_original_var.get(),
                              "color": selected_color[0], "width": width_var.get(),
                              "position": position_var.get(), "opacity": opacity_var.get()}
             write_presets(presets)
@@ -570,8 +558,9 @@ def main():
             width, opacity = int(settings["width"]), int(settings["opacity"])
             if not 5 <= width <= 60 or not 0 <= opacity <= 100 or settings["position"] not in POSITIONS:
                 raise ValueError("The preset contains invalid settings.")
+            if not settings["text"].strip():
+                raise ValueError("This preset used the old logo. Add watermark text and save it again.")
             watermark_text_var.set(settings["text"])
-            use_original_var.set(settings.get("use_original_logo", not settings["text"].strip()))
             font_var.set(settings["font"])
             width_var.set(width)
             position_var.set(settings["position"])
@@ -676,8 +665,7 @@ def main():
                 raise ValueError("Choose a watermark width between 5% and 60%.")
             destination, created, skipped, errors = process_folder(
                 Path(folder_var.get()), width, selected_color[0], replace_var.get(), character_var.get(),
-                watermark_text_var.get(), fonts[font_var.get()], position_var.get(), opacity_var.get(),
-                use_original_var.get())
+                watermark_text_var.get(), fonts[font_var.get()], position_var.get(), opacity_var.get())
         except Exception as exc:
             record_error("Creating watermarked copies", exc)
             messagebox.showerror("Watermark Tool", str(exc))
@@ -737,7 +725,6 @@ def main():
     label(footer, "Original images stay untouched", 9, MUTED).pack(anchor="w", pady=(9, 0))
     width_var.trace_add("write", update_preview)
     watermark_text_var.trace_add("write", update_preview)
-    use_original_var.trace_add("write", update_preview)
     font_var.trace_add("write", update_preview)
     position_var.trace_add("write", update_preview)
     opacity_var.trace_add("write", update_preview)
@@ -761,7 +748,7 @@ if __name__ == "__main__":
             else:
                 raise RuntimeError("Blank watermark text unexpectedly selected a logo")
             _, created, _, errors = process_folder(sample, 25, character_name="Example",
-                                                    use_original_logo=True)
+                                                    watermark_text="Example")
             if created != 2 or errors:
                 raise RuntimeError(f"Watermark processing self-test failed: {errors}")
             font_path = next(iter(available_fonts().values()))
