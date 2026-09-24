@@ -3,6 +3,7 @@ import colorsys
 import faulthandler
 import filecmp
 import gc
+import json
 import os
 import queue
 import re
@@ -23,6 +24,57 @@ EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_PIXELS = 40_000_000
 ORIGINAL_PURPLE = "#7920ad"
 FONT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
+POSITIONS = ("Top left", "Top center", "Top right", "Middle left", "Center",
+             "Middle right", "Bottom left", "Bottom center", "Bottom right")
+
+
+def preset_path():
+    return imported_font_dir().parent / "presets.json"
+
+
+def read_presets(path=None):
+    path = Path(path) if path else preset_path()
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError("Saved presets file is invalid.")
+    return data
+
+
+def write_presets(presets, path=None):
+    path = Path(path) if path else preset_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(presets, stream, ensure_ascii=False, indent=2)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def placement(canvas_size, overlay_size, choice, margin):
+    if choice not in POSITIONS:
+        raise ValueError("Choose a valid watermark position.")
+    across = choice.split()[-1]
+    down = choice.split()[0]
+    width, height = canvas_size
+    mark_width, mark_height = overlay_size
+    x = margin if across == "left" else width - margin - mark_width if across == "right" else (width - mark_width) // 2
+    y = margin if down == "Top" else height - margin - mark_height if down == "Bottom" else (height - mark_height) // 2
+    return max(0, x), max(0, y)
+
+
+def set_opacity(mark, percent):
+    if not 0 <= percent <= 100:
+        raise ValueError("Choose opacity between 0% and 100%.")
+    if percent == 100:
+        return mark
+    result = mark.copy()
+    result.putalpha(mark.getchannel("A").point(lambda alpha: round(alpha * percent / 100)))
+    return result
 
 
 def imported_font_dir():
@@ -113,7 +165,7 @@ def record_error(context, exc):
         pass
 
 
-def watermark_one(source, output_temp, watermark, width_percent):
+def watermark_one(source, output_temp, watermark, width_percent, position="Bottom left", opacity=100):
     with Image.open(source) as raw:
         if raw.width * raw.height > MAX_PIXELS:
             raise ValueError("Image exceeds 40 megapixels; reduce its dimensions before processing.")
@@ -131,11 +183,14 @@ def watermark_one(source, output_temp, watermark, width_percent):
                 size = (max(1, round(watermark.width * scale)),
                         max(1, round(watermark.height * scale)))
                 with watermark.resize(size, Image.Resampling.LANCZOS) as overlay:
-                    position = (margin, canvas.height - margin - size[1])
+                    point = placement(canvas.size, size, position, margin)
+                    faded = set_opacity(overlay, opacity)
                     if mode == "RGBA":
-                        canvas.alpha_composite(overlay, position)
+                        canvas.alpha_composite(faded, point)
                     else:
-                        canvas.paste(overlay, position, overlay.getchannel("A"))
+                        canvas.paste(faded, point, faded.getchannel("A"))
+                    if faded is not overlay:
+                        faded.close()
                 if suffix in {".jpg", ".jpeg"}:
                     canvas.save(output_temp, format="JPEG", quality=95, subsampling=0)
                 elif suffix == ".webp":
@@ -162,11 +217,14 @@ def colored_watermark(watermark: Image.Image, color: str | None) -> Image.Image:
 
 def process_folder(folder: Path, width_percent: int = 25, color: str | None = None,
                    replace_existing: bool = False, character_name: str = "",
-                   watermark_text: str = "", font_path: str | None = None):
+                   watermark_text: str = "", font_path: str | None = None,
+                   position: str = "Bottom left", opacity: int = 100):
     if not folder.is_dir():
         raise ValueError("Choose a folder containing images.")
     if not MARK.is_file():
         raise FileNotFoundError(f"Watermark graphic is missing: {MARK}")
+    if position not in POSITIONS or not 0 <= opacity <= 100:
+        raise ValueError("Choose a valid watermark position and opacity.")
     character_name = character_name.strip()
     if character_name and (len(character_name) > 140 or any(ch in character_name for ch in '<>:"/\\|?*')
                            or character_name.endswith((" ", ".")) or any(ord(ch) < 32 for ch in character_name)
@@ -211,7 +269,7 @@ def process_folder(folder: Path, width_percent: int = 25, color: str | None = No
                         log.write(f"Processing {source}\n")
                 except OSError:
                     pass
-                watermark_one(source, output_temp, watermark, width_percent)
+                watermark_one(source, output_temp, watermark, width_percent, position, opacity)
                 os.replace(output_temp, output)
                 created += 1
             except Exception as exc:
@@ -373,6 +431,8 @@ def main():
     hue_var = tk.IntVar(value=278)
     swatch = tk.Label(color_row, width=3, bg="#7920ad", relief="solid", bd=1,
                       highlightbackground=ACCENT, highlightthickness=2)
+    position_var = tk.StringVar(value="Bottom left")
+    opacity_var = tk.IntVar(value=100)
 
     def update_preview(*_):
         backdrop = Image.new("RGBA", (700, 150), "#0d1529")
@@ -398,8 +458,12 @@ def main():
         size = (size[0], max(1, round(size[0] * mark.height / mark.width)))
         if size[1] > 120:
             size = (max(1, round(size[0] * 120 / size[1])), 120)
-        overlay = mark.resize(size, Image.Resampling.LANCZOS)
-        backdrop.alpha_composite(overlay, (14, 150 - 14 - size[1]))
+        with mark.resize(size, Image.Resampling.LANCZOS) as overlay:
+            faded = set_opacity(overlay, opacity_var.get())
+            backdrop.alpha_composite(faded, placement(backdrop.size, size, position_var.get(), 14))
+            if faded is not overlay:
+                faded.close()
+        mark.close()
         photo = ImageTk.PhotoImage(backdrop)
         preview_label.configure(image=photo)
         preview_label.image = photo
@@ -431,6 +495,100 @@ def main():
     buttons.pack(anchor="w", pady=(5, 0))
     button(buttons, "Pick color", pick_color).pack(side="left")
     button(buttons, "Original purple", lambda: set_color(None)).pack(side="left", padx=7)
+
+    more_settings = tk.Frame(controls, bg=CARD)
+    more_settings.pack(fill="x", pady=(17, 0))
+    position_box = tk.Frame(more_settings, bg=CARD)
+    position_box.pack(side="left", fill="x", expand=True, padx=(0, 20))
+    label(position_box, "06  /  POSITION", 10, ACCENT, True).pack(anchor="w", pady=(0, 5))
+    ttk.Combobox(position_box, textvariable=position_var, values=POSITIONS, state="readonly",
+                 style="Dark.TCombobox").pack(fill="x")
+    opacity_box = tk.Frame(more_settings, bg=CARD)
+    opacity_box.pack(side="left", fill="x", expand=True)
+    opacity_heading = tk.Frame(opacity_box, bg=CARD)
+    opacity_heading.pack(fill="x")
+    label(opacity_heading, "07  /  OPACITY", 10, ACCENT, True).pack(side="left")
+    tk.Label(opacity_heading, textvariable=opacity_var, bg=CARD, fg=FG,
+             font=("Segoe UI", 10)).pack(side="right")
+    tk.Scale(opacity_box, from_=0, to=100, orient="horizontal", variable=opacity_var,
+             showvalue=False, bg=CARD, fg=FG, troughcolor="#2c1a4b", activebackground=ACCENT,
+             highlightthickness=0, bd=0, command=lambda _: update_preview()).pack(fill="x")
+
+    label(controls, "08  /  SAVED PRESETS", 10, ACCENT, True).pack(anchor="w", pady=(18, 7))
+    preset_row = tk.Frame(controls, bg=CARD)
+    preset_row.pack(fill="x")
+    preset_var = tk.StringVar()
+    preset_box = ttk.Combobox(preset_row, textvariable=preset_var, style="Dark.TCombobox")
+    preset_box.pack(side="left", fill="x", expand=True)
+
+    def refresh_presets():
+        preset_box.configure(values=sorted(read_presets(), key=str.casefold))
+
+    def save_preset():
+        name = preset_var.get().strip()
+        if not name or len(name) > 50:
+            messagebox.showerror("Preset name", "Enter a preset name of up to 50 characters.", parent=window)
+            return
+        try:
+            presets = read_presets()
+            if name in presets and not messagebox.askyesno("Replace preset", f"Replace '{name}'?", parent=window):
+                return
+            presets[name] = {"text": watermark_text_var.get(), "font": font_var.get(),
+                             "color": selected_color[0], "width": width_var.get(),
+                             "position": position_var.get(), "opacity": opacity_var.get()}
+            write_presets(presets)
+            refresh_presets()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Could not save preset", str(exc), parent=window)
+
+    def load_preset():
+        try:
+            presets = read_presets()
+            name = preset_var.get().strip()
+            if name not in presets:
+                messagebox.showinfo("Load preset", "Choose a saved preset first.", parent=window)
+                return
+            settings = presets[name]
+            if settings["font"] not in fonts:
+                raise ValueError("This preset's font is missing. Import that font again to use it.")
+            color = settings["color"]
+            if color is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                raise ValueError("The preset color is invalid.")
+            width, opacity = int(settings["width"]), int(settings["opacity"])
+            if not 5 <= width <= 60 or not 0 <= opacity <= 100 or settings["position"] not in POSITIONS:
+                raise ValueError("The preset contains invalid settings.")
+            watermark_text_var.set(settings["text"])
+            font_var.set(settings["font"])
+            width_var.set(width)
+            position_var.set(settings["position"])
+            opacity_var.set(opacity)
+            set_color(color)
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Could not load preset", str(exc), parent=window)
+
+    def delete_preset():
+        name = preset_var.get().strip()
+        try:
+            presets = read_presets()
+            if name not in presets:
+                messagebox.showinfo("Delete preset", "Choose a saved preset first.", parent=window)
+                return
+            if not messagebox.askyesno("Delete preset", f"Delete '{name}'?", parent=window):
+                return
+            del presets[name]
+            write_presets(presets)
+            preset_var.set("")
+            refresh_presets()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Could not delete preset", str(exc), parent=window)
+
+    button(preset_row, "Save", save_preset).pack(side="left", padx=(8, 0))
+    button(preset_row, "Load", load_preset).pack(side="left", padx=(6, 0))
+    button(preset_row, "Delete", delete_preset).pack(side="left", padx=(6, 0))
+    try:
+        refresh_presets()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        messagebox.showerror("Could not read presets", str(exc), parent=window)
     replace_var = tk.BooleanVar(value=False)
     ttk.Checkbutton(controls, text="Replace existing watermarked copies", variable=replace_var,
                     style="Dark.TCheckbutton").pack(anchor="w", pady=(14, 0))
@@ -504,7 +662,7 @@ def main():
                 raise ValueError("Choose a watermark width between 5% and 60%.")
             destination, created, skipped, errors = process_folder(
                 Path(folder_var.get()), width, selected_color[0], replace_var.get(), character_var.get(),
-                watermark_text_var.get(), fonts[font_var.get()])
+                watermark_text_var.get(), fonts[font_var.get()], position_var.get(), opacity_var.get())
         except Exception as exc:
             record_error("Creating watermarked copies", exc)
             messagebox.showerror("Watermark Tool", str(exc))
@@ -561,10 +719,12 @@ def main():
         window.after(250, poll_updates)
 
     button(footer, "CHECK FOR UPDATES", lambda: check_updates(True)).pack(anchor="w", pady=(7, 0))
-    label(footer, "Bottom-left  ·  100% opacity  ·  Originals kept safe", 9, MUTED).pack(anchor="w", pady=(9, 0))
+    label(footer, "Original images stay untouched", 9, MUTED).pack(anchor="w", pady=(9, 0))
     width_var.trace_add("write", update_preview)
     watermark_text_var.trace_add("write", update_preview)
     font_var.trace_add("write", update_preview)
+    position_var.trace_add("write", update_preview)
+    opacity_var.trace_add("write", update_preview)
     window.after(0, update_preview)
     window.after(250, poll_updates)
     window.after(4000, check_updates)
@@ -592,9 +752,19 @@ if __name__ == "__main__":
                             raise RuntimeError("Imported font rendering failed")
             _, created, _, errors = process_folder(sample, 25, color="#aa55ff",
                                                    character_name="Custom", watermark_text="My Studio",
-                                                   font_path=font_path)
+                                                   font_path=font_path, position="Top right", opacity=40)
             if created != 2 or errors:
                 raise RuntimeError(f"Custom text self-test failed: {errors}")
+            if placement((640, 480), (100, 30), "Top right", 10) != (530, 10):
+                raise RuntimeError("Watermark position self-test failed")
+            with Image.new("RGBA", (2, 2), (150, 80, 200, 255)) as solid:
+                with set_opacity(solid, 40) as faded:
+                    if faded.getchannel("A").getpixel((0, 0)) != 102:
+                        raise RuntimeError("Watermark opacity self-test failed")
+            settings_path = sample / "presets.json"
+            write_presets({"Purple": {"width": 25, "opacity": 40}}, settings_path)
+            if read_presets(settings_path)["Purple"]["opacity"] != 40:
+                raise RuntimeError("Saved presets self-test failed")
     else:
         try:
             diagnostic = crash_log_path()
