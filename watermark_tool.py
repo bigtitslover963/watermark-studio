@@ -1,11 +1,14 @@
 from pathlib import Path
 import colorsys
+import faulthandler
+import gc
 import os
 import queue
 import re
 import shutil
 import sys
 import threading
+import traceback
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
@@ -16,6 +19,58 @@ import updater
 ROOT = Path(__file__).resolve().parent
 MARK = ROOT / "bigtitslover963.png"
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+MAX_PIXELS = 40_000_000
+
+
+def crash_log_path():
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "WatermarkStudio" / "crash.log"
+
+
+def record_error(context, exc):
+    try:
+        path = crash_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as log:
+            log.write(f"\n{context}\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=log)
+    except OSError:
+        pass
+
+
+def watermark_one(source, output_temp, watermark, width_percent):
+    with Image.open(source) as raw:
+        if raw.width * raw.height > MAX_PIXELS:
+            raise ValueError("Image exceeds 40 megapixels; reduce its dimensions before processing.")
+        original = ImageOps.exif_transpose(raw)
+        try:
+            suffix = source.suffix.lower()
+            mode = "RGBA" if suffix in {".png", ".webp"} else "RGB"
+            canvas = original.convert(mode)
+            try:
+                target_width = max(1, round(canvas.width * width_percent / 100))
+                margin = max(1, round(min(canvas.size) * 0.02))
+                scale = min(target_width / watermark.width,
+                            max(1, canvas.width - 2 * margin) / watermark.width,
+                            max(1, canvas.height - 2 * margin) / watermark.height)
+                size = (max(1, round(watermark.width * scale)),
+                        max(1, round(watermark.height * scale)))
+                with watermark.resize(size, Image.Resampling.LANCZOS) as overlay:
+                    position = (margin, canvas.height - margin - size[1])
+                    if mode == "RGBA":
+                        canvas.alpha_composite(overlay, position)
+                    else:
+                        canvas.paste(overlay, position, overlay.getchannel("A"))
+                if suffix in {".jpg", ".jpeg"}:
+                    canvas.save(output_temp, format="JPEG", quality=95, subsampling=0)
+                elif suffix == ".webp":
+                    canvas.save(output_temp, format="WEBP", quality=95)
+                else:
+                    canvas.save(output_temp, format="PNG")
+            finally:
+                canvas.close()
+        finally:
+            if original is not raw:
+                original.close()
 
 
 def colored_watermark(watermark: Image.Image, color: str | None) -> Image.Image:
@@ -79,38 +134,31 @@ def process_folder(folder: Path, width_percent: int = 25, color: str | None = No
                 continue
             output_temp = output.with_name(output.stem + ".tmp" + output.suffix)
             try:
-                with Image.open(source) as raw:
-                    original = ImageOps.exif_transpose(raw)
-                    canvas = original.convert("RGBA")
-                    target_width = max(1, round(canvas.width * width_percent / 100))
-                    margin = max(1, round(min(canvas.size) * 0.02))
-                    max_width = max(1, canvas.width - 2 * margin)
-                    max_height = max(1, canvas.height - 2 * margin)
-                    scale = min(target_width / watermark.width, max_width / watermark.width,
-                                max_height / watermark.height)
-                    size = (max(1, round(watermark.width * scale)),
-                            max(1, round(watermark.height * scale)))
-                    overlay = watermark.resize(size, Image.Resampling.LANCZOS)
-                    canvas.alpha_composite(overlay, (margin, canvas.height - margin - size[1]))
-                    suffix = source.suffix.lower()
-                    if suffix in {".jpg", ".jpeg"}:
-                        rgb = Image.new("RGB", canvas.size, "white")
-                        rgb.paste(canvas, mask=canvas.getchannel("A"))
-                        rgb.save(output_temp, format="JPEG", quality=95, subsampling=0)
-                    elif suffix == ".webp":
-                        canvas.save(output_temp, format="WEBP", quality=95)
-                    else:
-                        canvas.save(output_temp, format="PNG")
-                    os.replace(output_temp, output)
-                    created += 1
+                try:
+                    with crash_log_path().open("a", encoding="utf-8") as log:
+                        log.write(f"Processing {source}\n")
+                except OSError:
+                    pass
+                watermark_one(source, output_temp, watermark, width_percent)
+                os.replace(output_temp, output)
+                created += 1
             except Exception as exc:
+                record_error(f"Processing {source}", exc)
                 errors.append(f"{source.name}: {exc}")
                 output_temp.unlink(missing_ok=True)
+            finally:
+                gc.collect()
     return destination, created, skipped, errors
 
 
 def main():
     window = tk.Tk()
+    def report_callback_exception(exc_type, exc, tb):
+        try:
+            record_error("Interface callback", exc)
+        finally:
+            messagebox.showerror("Watermark Studio error", f"{exc}\n\nDetails: {crash_log_path()}", parent=window)
+    window.report_callback_exception = report_callback_exception
     window.title("BIGTITSLOVER963 | Watermark Studio")
     try:
         window.iconbitmap(str(ROOT / "WatermarkStudio.ico"))
@@ -344,6 +392,8 @@ def main():
         popup.focus_set()
 
     def run():
+        status.set("Processing images...")
+        window.update_idletasks()
         try:
             width = width_var.get()
             if not 5 <= width <= 60:
@@ -351,6 +401,7 @@ def main():
             destination, created, skipped, errors = process_folder(
                 Path(folder_var.get()), width, selected_color[0], replace_var.get(), character_var.get())
         except Exception as exc:
+            record_error("Creating watermarked copies", exc)
             messagebox.showerror("Watermark Tool", str(exc))
             return
         status.set(f"Created {created}; skipped {skipped}; failed {len(errors)}.")
@@ -414,4 +465,28 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--self-test" in sys.argv:
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            sample = Path(directory)
+            Image.new("RGB", (640, 480), "#453370").save(sample / "sample.jpg")
+            Image.new("RGBA", (640, 480), "#453370").save(sample / "sample.png")
+            _, created, _, errors = process_folder(sample, 25, character_name="Example")
+            if created != 2 or errors:
+                raise RuntimeError(f"Watermark processing self-test failed: {errors}")
+    else:
+        try:
+            diagnostic = crash_log_path()
+            diagnostic.parent.mkdir(parents=True, exist_ok=True)
+            with diagnostic.open("a", encoding="utf-8") as log:
+                faulthandler.enable(file=log)
+                main()
+        except Exception as exc:
+            record_error("Application stopped", exc)
+            try:
+                emergency = tk.Tk()
+                emergency.withdraw()
+                messagebox.showerror("Watermark Studio stopped", f"{exc}\n\nCrash report: {crash_log_path()}")
+                emergency.destroy()
+            except Exception:
+                pass
