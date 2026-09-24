@@ -6,6 +6,8 @@ Enter text in **Watermark text** to make your own lettering and choose a font in
 
 Use **Import font** to choose a `.ttf`, `.otf`, or `.ttc` file without installing it in Windows. The app saves a copy in `%LOCALAPPDATA%\WatermarkStudio\fonts` so it stays in the picker after you reopen it. Only import fonts you have permission to use.
 
+Choose one of nine watermark positions, set opacity from 0 to 100%, and save your watermark text, font, color, width, position, and opacity as a named preset. Use **Load** to restore it later or **Delete** to remove it. Presets are stored in `%LOCALAPPDATA%\WatermarkStudio\presets.json`. The image folder and character filename are selected separately for each batch.
+
 ## Build on Windows
 
 Install Python 3.13, then run **Build Windows EXE.bat**. The resulting app is `dist/Watermark Studio.exe`.
