@@ -11,6 +11,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "Watermark Studio.exe"
+ASSET_NAME = "Watermark.Studio.exe"  # GitHub replaces spaces in uploaded asset names.
 
 
 def build_info():
@@ -42,10 +43,10 @@ def latest_release():
     if version_tuple(release["tag_name"]) <= version_tuple(info["version"]):
         return None
     assets = {item["name"]: item["browser_download_url"] for item in release["assets"]}
-    if APP_NAME not in assets or APP_NAME + ".sha256" not in assets:
+    exe_url = assets.get(ASSET_NAME) or assets.get(APP_NAME)
+    digest_url = assets.get(ASSET_NAME + ".sha256") or assets.get(APP_NAME + ".sha256")
+    if not exe_url or not digest_url:
         raise RuntimeError("The new release is still being built. Please check again in a minute.")
-    exe_url = assets[APP_NAME]
-    digest_url = assets[APP_NAME + ".sha256"]
     prefix = f"https://github.com/{repo}/releases/download/"
     if not exe_url.startswith(prefix) or not digest_url.startswith(prefix):
         raise ValueError("Unexpected update source")
@@ -78,7 +79,7 @@ def install_after_exit(staged):
     if not getattr(sys, "frozen", False) or os.name != "nt":
         raise RuntimeError("Automatic installation only works in the Windows EXE")
     current = Path(sys.executable)
-    if current.name.casefold() != APP_NAME.casefold():
+    if current.name.casefold() not in {APP_NAME.casefold(), ASSET_NAME.casefold()}:
         raise RuntimeError("The app was renamed; keep its original EXE filename for updates")
     script = staged.parent / "install-update.ps1"
 
