@@ -747,11 +747,11 @@ if __name__ == "__main__":
                 pass
             else:
                 raise RuntimeError("Blank watermark text unexpectedly selected a logo")
+            font_path = next(iter(available_fonts().values()))
             _, created, _, errors = process_folder(sample, 25, character_name="Example",
-                                                    watermark_text="Example")
+                                                    watermark_text="Example", font_path=font_path)
             if created != 2 or errors:
                 raise RuntimeError(f"Watermark processing self-test failed: {errors}")
-            font_path = next(iter(available_fonts().values()))
             if Path(font_path).is_file():
                 with tempfile.TemporaryDirectory() as font_directory:
                     imported_name, imported_path = import_font(font_path, font_directory)
