@@ -4,6 +4,8 @@ A Windows batch image watermark app with a purple interface, live preview, and n
 
 Enter text in **Watermark text** to make your own lettering and choose a font installed on your PC. The live preview shows your font and chosen color. Leave the field blank to use the original BIGTITSLOVER963 graphic. The watermark width defaults to 25% of each image.
 
+Use **Import font** to choose a `.ttf`, `.otf`, or `.ttc` file without installing it in Windows. The app saves a copy in `%LOCALAPPDATA%\WatermarkStudio\fonts` so it stays in the picker after you reopen it. Only import fonts you have permission to use.
+
 ## Build on Windows
 
 Install Python 3.13, then run **Build Windows EXE.bat**. The resulting app is `dist/Watermark Studio.exe`.
