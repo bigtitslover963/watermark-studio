@@ -1,19 +1,35 @@
 # Watermark Studio
 
-A Windows batch image watermark app with a purple interface, live preview, and numbered clean/watermarked pairs. Originals in the selected folder are left untouched.
+A Windows batch image watermark app with a purple interface and live preview. Your source images stay untouched.
 
-Enter text in **Watermark text** to make your own lettering and choose a font installed on your PC. New sessions start with no watermark name selected. Enter text before creating watermarked copies. The live preview shows your chosen watermark and color. The watermark width defaults to 25% of each image.
+## Download and start
 
-Use **Import font** to choose a `.ttf`, `.otf`, or `.ttc` file without installing it in Windows. The app saves a copy in `%LOCALAPPDATA%\WatermarkStudio\fonts` so it stays in the picker after you reopen it. Only import fonts you have permission to use.
+1. On the [latest release](https://github.com/bigtitslover963/watermark-studio/releases/latest), expand **Assets** and download **Watermark Studio.exe**. The **Source code** ZIP is not the Windows app.
+2. Put the EXE in a folder where you want to keep it and double-click it. Python is not required. Keep its filename as **Watermark Studio.exe** for automatic updates.
+3. When a newer version is available, the app offers to install it. You can also click **CHECK FOR UPDATES** at the bottom.
 
-Choose one of nine watermark positions, set opacity from 0 to 100%, and save your watermark text, font, color, width, position, and opacity as a named preset. Use **Load** to restore it later or **Delete** to remove it. Presets are stored in `%LOCALAPPDATA%\WatermarkStudio\presets.json`. The image folder and character filename are selected separately for each batch.
+## Watermark your images
+
+1. Put your PNG, JPG, JPEG, or WebP images together in one folder. In **01 / IMAGE FOLDER**, click **Browse** and select that folder.
+2. In **03 / WATERMARK TEXT**, type the text you want on the images. This field is required; no DA name is filled in automatically.
+3. Pick a font and check the **LIVE PREVIEW**. Optionally use **Import font** for a `.ttf`, `.otf`, or `.ttc` file.
+4. Adjust **WATERMARK SIZE** (25% by default), **LETTERING COLOR**, **POSITION** (bottom left by default), and **OPACITY** (100% by default). Size is the watermark width as a percentage of each image's width.
+5. Optionally type a **CHARACTER NAME** to number the output files. Then scroll down and click **CREATE WATERMARKED COPIES**.
+
+Your input images stay untouched. Without a character name, `photo.png` creates `Watermarked/photo_watermarked.png`. With `Rias Gremory` as the name, the app creates `Named Originals/Rias Gremory 1.png` and `Watermarked/Rias Gremory 1b.png`, followed by 2, 3, and so on in filename order. The named original is a copy.
+
+Existing watermarked files are skipped. To apply changed settings to the same output filenames, check **Replace existing watermarked copies** and run the batch again. The finished popup shows created, skipped, and failed counts and has a button to open the output folder.
+
+## Fonts and presets
+
+**Import font** copies a font into `%LOCALAPPDATA%\WatermarkStudio\fonts`, so it remains available after you close the app. Only import fonts you have permission to use.
+
+To reuse settings, type a name in **SAVED PRESETS** and click **Save**. Choose that name and click **Load** to restore the text, font, color, size, position, and opacity, or **Delete** to remove it. The image folder and character name are chosen separately for each batch. Presets are stored in `%LOCALAPPDATA%\WatermarkStudio\presets.json`. Older presets that only used the removed original-logo option need watermark text before they can be used.
 
 ## Build on Windows
 
-Install Python 3.13, then run **Build Windows EXE.bat**. The resulting app is `dist/Watermark Studio.exe`.
+If you want to build it yourself, install Python 3.13 and run **Build Windows EXE.bat**. The resulting app is `dist/Watermark Studio.exe`.
 
 ## Releases and updates
 
-A new tag such as `v1.0.0` triggers `.github/workflows/release.yml` to publish a Windows EXE and its SHA256 checksum. The release build embeds the repository address and version. It checks for newer GitHub Releases when opened, asks before installing, and verifies the downloaded EXE against the published checksum.
-
-Use a public repository for unauthenticated update checks. The locally built EXE does not know a repository address and therefore does not auto-update.
+A version tag triggers `.github/workflows/release.yml` to publish a Windows EXE and its SHA256 checksum. The release EXE checks GitHub for updates and verifies the download against the published checksum before installing. The locally built EXE does not know a repository address and therefore does not auto-update. The GitHub repository must be public for update checks without signing in.
