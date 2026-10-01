@@ -22,11 +22,11 @@ jobs:
           $info = @{version="${{ github.ref_name }}"; repository="${{ github.repository }}"} | ConvertTo-Json -Compress
           [System.IO.File]::WriteAllText("$PWD\build_info.json", $info)
       - name: Install dependencies
-        run: python -m pip install pillow pyinstaller
+        run: python -m pip install pillow pyinstaller imageio-ffmpeg
       - name: Build application
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Watermark Studio" --icon WatermarkStudio.ico --add-data "bigtitslover963.png:." --add-data "WatermarkStudio.ico:." --add-data "build_info.json:." --hidden-import updater watermark_tool.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Watermark Studio" --icon WatermarkStudio.ico --add-data "WatermarkStudio.ico:." --add-data "build_info.json:." --collect-all imageio_ffmpeg --hidden-import updater watermark_tool.py
       - name: Test packaged image processing
         shell: pwsh
         run: |
