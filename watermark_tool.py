@@ -16,10 +16,11 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageTk
 import updater
+import media_watermark
 
 
 ROOT = Path(__file__).resolve().parent
-EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4"}
 MAX_PIXELS = 40_000_000
 ORIGINAL_PURPLE = "#7920ad"
 FONT_EXTENSIONS = {".ttf", ".otf", ".ttc"}
@@ -212,7 +213,8 @@ def colored_watermark(watermark: Image.Image, color: str | None) -> Image.Image:
 def process_folder(folder: Path, width_percent: int = 25, color: str | None = None,
                    replace_existing: bool = False, character_name: str = "",
                    watermark_text: str = "", font_path: str | None = None,
-                   position: str = "Bottom left", opacity: int = 100):
+                   position: str = "Bottom left", opacity: int = 100,
+                   cancel_event=None, progress=None):
     if not folder.is_dir():
         raise ValueError("Choose a folder containing images.")
     if position not in POSITIONS or not 0 <= opacity <= 100:
@@ -232,27 +234,42 @@ def process_folder(folder: Path, width_percent: int = 25, color: str | None = No
     files = [p for p in sorted(folder.iterdir(), key=natural_key)
              if p.is_file() and p.suffix.lower() in EXTENSIONS]
     if not files:
-        raise ValueError("No PNG, JPG, JPEG, or WebP images found in that folder.")
+        raise ValueError("No PNG, JPG, JPEG, WebP, GIF, or MP4 files found in that folder.")
     destination.mkdir(exist_ok=True)
     if clean_destination:
         clean_destination.mkdir(exist_ok=True)
     created, skipped, errors = 0, 0, []
     with make_watermark(watermark_text, font_path, color) as watermark:
         for index, source in enumerate(files, start=1):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            def report(fraction):
+                if progress:
+                    progress(index, len(files), source.name, fraction)
+            report(0)
             clean = clean_destination / f"{character_name} {index}{source.suffix}" if clean_destination else None
             output = destination / (f"{character_name} {index}b{source.suffix}" if character_name
                                     else f"{source.stem}_watermarked{source.suffix}")
             if clean and not clean.exists():
                 clean_temp = clean.with_name(clean.stem + ".tmp" + clean.suffix)
                 try:
-                    shutil.copy2(source, clean_temp)
+                    with source.open('rb') as incoming, clean_temp.open('wb') as outgoing:
+                        while chunk := incoming.read(1024 * 1024):
+                            media_watermark.check_cancel(cancel_event)
+                            outgoing.write(chunk)
+                    shutil.copystat(source, clean_temp)
                     os.replace(clean_temp, clean)
+                except media_watermark.Cancelled:
+                    clean_temp.unlink(missing_ok=True)
+                    break
                 except Exception as exc:
                     clean_temp.unlink(missing_ok=True)
                     errors.append(f"{source.name} (clean copy): {exc}")
+                    report(1)
                     continue
             if output.exists() and not replace_existing:
                 skipped += 1
+                report(1)
                 continue
             output_temp = output.with_name(output.stem + ".tmp" + output.suffix)
             try:
@@ -261,15 +278,27 @@ def process_folder(folder: Path, width_percent: int = 25, color: str | None = No
                         log.write(f"Processing {source}\n")
                 except OSError:
                     pass
-                watermark_one(source, output_temp, watermark, width_percent, position, opacity)
+                if source.suffix.lower() == '.gif':
+                    media_watermark.watermark_gif(source, output_temp, watermark, width_percent,
+                                                 position, opacity, placement, cancel_event, report)
+                elif source.suffix.lower() == '.mp4':
+                    media_watermark.watermark_mp4(source, output_temp, watermark, width_percent,
+                                                 position, opacity, placement, cancel_event, report)
+                else:
+                    watermark_one(source, output_temp, watermark, width_percent, position, opacity)
+                media_watermark.check_cancel(cancel_event)
                 os.replace(output_temp, output)
                 created += 1
+            except media_watermark.Cancelled:
+                output_temp.unlink(missing_ok=True)
+                break
             except Exception as exc:
                 record_error(f"Processing {source}", exc)
                 errors.append(f"{source.name}: {exc}")
                 output_temp.unlink(missing_ok=True)
             finally:
                 gc.collect()
+            report(1)
     return destination, created, skipped, errors
 
 
@@ -599,9 +628,9 @@ def main():
     tk.Label(footer, textvariable=status, bg=BG, fg=MUTED, anchor="w",
              font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 11))
 
-    def show_result(destination, created, skipped, errors, named=False):
+    def show_result(destination, created, skipped, errors, named=False, cancelled=False):
         popup = tk.Toplevel(window)
-        popup.title("Batch finished | Watermark Studio")
+        popup.title(("Batch cancelled" if cancelled else "Batch finished") + " | Watermark Studio")
         popup.configure(bg=BG)
         popup.resizable(False, False)
         popup.transient(window)
@@ -613,7 +642,7 @@ def main():
 
         body = tk.Frame(popup, bg=BG, padx=27, pady=22)
         body.pack(fill="both", expand=True)
-        label(body, "◈  BATCH FINISHED", 18, ACCENT, True).pack(anchor="w")
+        label(body, "◈  BATCH CANCELLED" if cancelled else "◈  BATCH FINISHED", 18, ACCENT, True).pack(anchor="w")
         label(body, "Your originals are untouched.", 10, MUTED).pack(anchor="w", pady=(2, 17))
 
         stats = tk.Frame(body, bg=BG)
@@ -656,27 +685,101 @@ def main():
         popup.grab_set()
         popup.focus_set()
 
+    batch_queue = queue.Queue()
+    cancel_event = threading.Event()
+    busy = [False]
+    closing = [False]
+    updating = [False]
+    progress_var = tk.DoubleVar(value=0)
+    ttk.Progressbar(footer, variable=progress_var, maximum=100).pack(fill='x', pady=(0, 8))
+
     def run():
-        status.set("Processing images...")
-        window.update_idletasks()
+        if busy[0] or updating[0]:
+            return
         try:
             width = width_var.get()
             if not 5 <= width <= 60:
                 raise ValueError("Choose a watermark width between 5% and 60%.")
-            destination, created, skipped, errors = process_folder(
+            args = (
                 Path(folder_var.get()), width, selected_color[0], replace_var.get(), character_var.get(),
                 watermark_text_var.get(), fonts[font_var.get()], position_var.get(), opacity_var.get())
+            if not watermark_text_var.get().strip():
+                raise ValueError("Enter the text you want on your watermark.")
         except Exception as exc:
-            record_error("Creating watermarked copies", exc)
             messagebox.showerror("Watermark Tool", str(exc))
             return
-        status.set(f"Created {created}; skipped {skipped}; failed {len(errors)}.")
-        show_result(destination, created, skipped, errors, bool(character_var.get().strip()))
+        busy[0] = True
+        cancel_event.clear()
+        create_button.configure(state='disabled')
+        cancel_button.configure(state='normal')
+        progress_var.set(0)
+        status.set('Starting batch...')
 
-    button(footer, "CREATE WATERMARKED COPIES", run, True).pack(anchor="w")
+        def work():
+            try:
+                def report(index, total, name, fraction):
+                    batch_queue.put(('progress', (index, total, name, fraction)))
+                result = process_folder(*args, cancel_event=cancel_event, progress=report)
+                batch_queue.put(('done', (result, cancel_event.is_set(), bool(args[4]))))
+            except Exception as exc:
+                record_error('Creating watermarked copies', exc)
+                batch_queue.put(('error', str(exc)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def cancel_batch():
+        if busy[0]:
+            cancel_event.set()
+            cancel_button.configure(state='disabled')
+            status.set('Cancelling... Keeping completed files.')
+
+    def poll_batch():
+        while not batch_queue.empty():
+            kind, value = batch_queue.get_nowait()
+            if kind == 'progress':
+                index, total, name, fraction = value
+                progress_var.set((index - 1 + fraction) / total * 100)
+                if not cancel_event.is_set():
+                    status.set(f'{index}/{total}: {name} ({round(fraction * 100)}%)')
+            else:
+                busy[0] = False
+                if closing[0]:
+                    window.destroy()
+                    return
+                create_button.configure(state='normal')
+                cancel_button.configure(state='disabled')
+                if kind == 'error':
+                    status.set('Batch could not finish.')
+                    messagebox.showerror('Watermark Studio', value, parent=window)
+                else:
+                    (destination, created, skipped, errors), cancelled, named = value
+                    prefix = 'Cancelled. ' if cancelled else 'Finished. '
+                    status.set(prefix + f'Created {created}; skipped {skipped}; failed {len(errors)}.')
+                    if not cancelled:
+                        progress_var.set(100)
+                    show_result(destination, created, skipped, errors, named, cancelled)
+        window.after(100, poll_batch)
+
+    batch_actions = tk.Frame(footer, bg=BG)
+    batch_actions.pack(anchor='w')
+    create_button = button(batch_actions, "CREATE WATERMARKED COPIES", run, True)
+    create_button.pack(side='left')
+    cancel_button = button(batch_actions, 'CANCEL', cancel_batch)
+    cancel_button.pack(side='left', padx=(10, 0))
+    cancel_button.configure(state='disabled')
+    def close_window():
+        if busy[0]:
+            closing[0] = True
+            cancel_batch()
+        else:
+            window.destroy()
+    window.protocol('WM_DELETE_WINDOW', close_window)
     update_queue = queue.Queue()
 
     def check_updates(manual=False):
+        if busy[0]:
+            if manual:
+                messagebox.showinfo('Updates', 'Finish or cancel the batch before updating.', parent=window)
+            return
         if not getattr(sys, "frozen", False) or not updater.build_info().get("repository"):
             if manual:
                 messagebox.showinfo("Updates", "Automatic updates become available in the GitHub release build.", parent=window)
@@ -694,15 +797,22 @@ def main():
         while not update_queue.empty():
             kind, value, manual = update_queue.get_nowait()
             if kind == "error":
+                if updating[0]:
+                    updating[0] = False
+                    create_button.configure(state='normal')
                 if manual:
                     messagebox.showerror("Update check failed", value, parent=window)
             elif kind == "checked":
+                if busy[0]:
+                    continue
                 if value is None:
                     if manual:
                         messagebox.showinfo("Updates", "You have the latest version.", parent=window)
                 else:
                     version, exe_url, digest_url = value
                     if messagebox.askyesno("Update available", f"Version {version} is ready. Download and install it now?", parent=window):
+                        updating[0] = True
+                        create_button.configure(state='disabled')
                         status.set("Downloading update and checking its SHA256 checksum...")
 
                         def download():
@@ -718,6 +828,8 @@ def main():
                     window.destroy()
                     return
                 except Exception as exc:
+                    updating[0] = False
+                    create_button.configure(state='normal')
                     messagebox.showerror("Installation failed", str(exc), parent=window)
         window.after(250, poll_updates)
 
@@ -729,6 +841,7 @@ def main():
     position_var.trace_add("write", update_preview)
     opacity_var.trace_add("write", update_preview)
     window.after(0, update_preview)
+    window.after(100, poll_batch)
     window.after(250, poll_updates)
     window.after(4000, check_updates)
     window.mainloop()
@@ -775,6 +888,60 @@ if __name__ == "__main__":
             write_presets({"Purple": {"width": 25, "opacity": 40}}, settings_path)
             if read_presets(settings_path)["Purple"]["opacity"] != 40:
                 raise RuntimeError("Saved presets self-test failed")
+            # Exercise bundled FFmpeg as well as GIF timing and cancelled output cleanup.
+            import subprocess
+            import imageio_ffmpeg
+            animations = sample / 'animations'
+            animations.mkdir()
+            gif = animations / 'sample.gif'
+            frames = [Image.new('RGBA', (160, 120), color) for color in ('red', 'green', 'blue')]
+            frames[0].save(gif, save_all=True, append_images=frames[1:], duration=[80, 140, 220], loop=2)
+            for frame in frames:
+                frame.close()
+            video = animations / 'sample.mp4'
+            subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-y', '-loglevel', 'error',
+                            '-f', 'lavfi', '-i', 'color=c=blue:s=160x120:r=10:d=1',
+                            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+                            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+                            '-shortest', str(video)], check=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            progress_records = []
+            _, created, _, errors = process_folder(animations, watermark_text='Test', font_path=font_path,
+                progress=lambda *record: progress_records.append(record))
+            if created != 2 or errors or not progress_records:
+                raise RuntimeError(f'Animation/video test failed: {errors}')
+            with Image.open(animations / 'Watermarked' / 'sample_watermarked.gif') as result:
+                if result.n_frames != 3 or result.info.get('loop') != 2:
+                    raise RuntimeError('GIF frames or loop changed')
+                for index, expected in enumerate([80, 140, 220]):
+                    result.seek(index)
+                    if result.info.get('duration') != expected:
+                        raise RuntimeError('GIF timing changed')
+            probe = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-hide_banner', '-i',
+                                    str(animations / 'Watermarked' / 'sample_watermarked.mp4'),
+                                    '-f', 'null', '-'], capture_output=True, text=True,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            if probe.returncode or 'Audio: aac' not in probe.stderr:
+                raise RuntimeError('MP4 audio was not preserved')
+            for media in (gif, video):
+                isolated = sample / (media.suffix[1:] + '-cancel')
+                isolated.mkdir()
+                shutil.copy2(media, isolated / media.name)
+                event = threading.Event()
+                def cancel_during_render(index, total, name, fraction):
+                    if 0 < fraction < 1:
+                        event.set()
+                _, created, _, errors = process_folder(isolated, watermark_text='Cancel', font_path=font_path,
+                    cancel_event=event, progress=cancel_during_render)
+                if created or errors or not event.is_set() or list((isolated / 'Watermarked').iterdir()):
+                    raise RuntimeError(f'{media.suffix} cancellation left an output or failed count')
+                previous = isolated / 'Watermarked' / (media.stem + '_watermarked' + media.suffix)
+                previous.write_bytes(b'previous finished output')
+                event.clear()
+                process_folder(isolated, watermark_text='Cancel', font_path=font_path, replace_existing=True,
+                    cancel_event=event, progress=cancel_during_render)
+                if previous.read_bytes() != b'previous finished output':
+                    raise RuntimeError('Cancelling replacement changed the previous output')
     else:
         try:
             diagnostic = crash_log_path()
